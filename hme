@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Hide My Email CLI - Generate iCloud Hide My Email addresses."""
+
+import argparse
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+CONFIG_DIR = os.path.expanduser("~/.config/hide-my-email")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+
+DEFAULT_CLIENT_BUILD_NUMBER = "2542Build17"
+DEFAULT_CLIENT_MASTERING_NUMBER = "2542Build17"
+SETUP_URL = "https://setup.icloud.com/setup/ws/1/validate"
+REQUEST_TIMEOUT_SEC = 30
+
+
+# -- Exceptions ---------------------------------------------------------------
+
+
+class HmeError(Exception):
+    """Base exception for all HME errors."""
+
+
+class AuthError(HmeError):
+    """Cookie expired or invalid."""
+
+
+class ApiError(HmeError):
+    """iCloud API returned an unexpected response."""
+
+
+class ConfigError(HmeError):
+    """Configuration missing or corrupt."""
+
+
+class NetworkError(HmeError):
+    """Network connectivity issue."""
+
+
+# -- Config I/O ---------------------------------------------------------------
+
+
+def load_config():
+    """Load config.json. Returns None if file does not exist."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as e:
+        raise ConfigError(f"Failed to read {CONFIG_FILE}: {e}")
+
+
+def save_config(config):
+    """Atomically write config.json with owner-only permissions (0600)."""
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=CONFIG_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+        os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp_path, CONFIG_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+# -- HTTP / iCloud API ---------------------------------------------------------
+
+
+def _build_headers(config):
+    return {
+        "Origin": "https://www.icloud.com",
+        "Referer": "https://www.icloud.com/",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Cookie": config["cookies"],
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.0 Safari/605.1.15"
+        ),
+    }
+
+
+def _build_query_params(config):
+    return {
+        "clientBuildNumber": config.get(
+            "client_build_number", DEFAULT_CLIENT_BUILD_NUMBER
+        ),
+        "clientMasteringNumber": config.get(
+            "client_mastering_number", DEFAULT_CLIENT_MASTERING_NUMBER
+        ),
+        "clientId": config.get("client_id", str(uuid.uuid4()).upper()),
+        "dsid": config["dsid"],
+    }
+
+
+def _extract_email(value):
+    """Extract an email string from an API response field.
+
+    The HME API may return the address as a plain string or as a dict
+    like {"hme": "addr@...", ...}.  This normalises both to a string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("hme") or value.get("address") or value.get("email")
+    return None
+
+
+def http_request(method, url, config, data=None):
+    """Single HTTP entry-point. Raises HmeError subtypes on failure."""
+    headers = _build_headers(config)
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = Request(url, data=body, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as e:
+        if e.code in (401, 421):
+            raise AuthError(
+                "Cookie expired or invalid. Run 'hme setup' to re-configure."
+            )
+        error_body = e.read().decode("utf-8", errors="replace")
+        raise ApiError(f"HTTP {e.code}: {error_body}")
+    except json.JSONDecodeError as e:
+        raise ApiError(f"Invalid JSON in API response: {e}")
+    except URLError as e:
+        raise NetworkError(f"Network error: {e.reason}")
+
+
+def validate_and_cache(config):
+    """Call /validate to obtain DSID and base URL, then persist them."""
+    result = http_request("POST", SETUP_URL, config)
+
+    dsid = result.get("dsInfo", {}).get("dsid")
+    if not dsid:
+        raise ApiError("Could not retrieve DSID from validate response.")
+
+    base_url = (
+        result.get("webservices", {}).get("premiummailsettings", {}).get("url")
+    )
+    if not base_url:
+        raise ApiError(
+            "Could not retrieve premiummailsettings URL. "
+            "Ensure your iCloud account has Hide My Email enabled."
+        )
+
+    config["dsid"] = str(dsid)
+    config["base_url"] = base_url
+    config["client_id"] = str(uuid.uuid4()).upper()
+    save_config(config)
+    return config
+
+
+def ensure_config():
+    """Return a validated config, running /validate if needed."""
+    config = load_config()
+    if not config or not config.get("cookies"):
+        raise ConfigError("Not configured. Run 'hme setup' first.")
+    if not config.get("dsid") or not config.get("base_url"):
+        print("Validating session...", file=sys.stderr)
+        config = validate_and_cache(config)
+    return config
+
+
+# -- Clipboard ----------------------------------------------------------------
+
+
+def copy_to_clipboard(text):
+    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+
+
+# -- Sub-commands --------------------------------------------------------------
+
+
+def read_clipboard():
+    """Read text from macOS clipboard via pbpaste."""
+    result = subprocess.run(
+        ["pbpaste"], capture_output=True, timeout=5,
+    )
+    return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+def prompt_cookie(open_browser=True):
+    """Prompt user for a cookie, validate, and save. Returns refreshed config."""
+    if open_browser:
+        print("Opening icloud.com ...", file=sys.stderr)
+        subprocess.run(["open", "https://www.icloud.com"], check=False)
+        print(file=sys.stderr)
+    print("1. Log in to icloud.com (if not already)", file=sys.stderr)
+    print("2. Open DevTools: Cmd+Option+I -> Network tab", file=sys.stderr)
+    print("3. Reload: Cmd+R", file=sys.stderr)
+    print("4. Click any request -> Headers -> Request Headers", file=sys.stderr)
+    print("5. Right-click the 'Cookie' row -> Copy value", file=sys.stderr)
+    print("6. Come back here and press Enter", file=sys.stderr)
+    print(file=sys.stderr)
+
+    input("Press Enter after copying the Cookie...")
+    cookie_input = read_clipboard()
+
+    if cookie_input.lower().startswith("cookie:"):
+        cookie_input = cookie_input[len("cookie:"):].strip()
+
+    if not cookie_input or "X-APPLE" not in cookie_input.upper():
+        raise ConfigError(
+            "Clipboard does not contain iCloud cookies. "
+            "Copy the 'Cookie' request header value and try again."
+        )
+
+    config = load_config() or {}
+    config["cookies"] = cookie_input
+    config.pop("dsid", None)
+    config.pop("base_url", None)
+    config.pop("client_id", None)
+    save_config(config)
+
+    print("Validating session...", file=sys.stderr)
+    config = validate_and_cache(config)
+    print(f"Session refreshed (DSID: {config['dsid']})", file=sys.stderr)
+    return config
+
+
+def cmd_setup(_args):
+    """Interactive Cookie setup."""
+    print("=== Hide My Email Setup ===", file=sys.stderr)
+    print(file=sys.stderr)
+    prompt_cookie(open_browser=True)
+    print(f"Config saved to {CONFIG_FILE}", file=sys.stderr)
+
+
+def cmd_generate(args):
+    """Generate a new Hide My Email address."""
+    config = ensure_config()
+    params = urlencode(_build_query_params(config))
+    base_url = config["base_url"]
+
+    # Step 1: Generate a random address
+    gen_result = http_request(
+        "POST", f"{base_url}/v1/hme/generate?{params}", config
+    )
+    hme_raw = gen_result.get("result", {}).get("hme")
+    hme_address = _extract_email(hme_raw)
+    if not hme_address:
+        raise ApiError(f"Failed to generate address: {json.dumps(gen_result)}")
+
+    # Step 2: Reserve with label/note (best-effort — still output address on failure)
+    reserve_data = {
+        "hme": hme_address,
+        "label": args.label or "",
+        "note": args.note or "",
+    }
+    try:
+        reserve_result = http_request(
+            "POST",
+            f"{base_url}/v1/hme/reserve?{params}",
+            config,
+            data=reserve_data,
+        )
+        reserved_raw = reserve_result.get("result", {}).get("hme")
+        final_address = _extract_email(reserved_raw) or hme_address
+    except HmeError as e:
+        print(
+            f"Warning: Generated {hme_address} but reserve failed: {e}",
+            file=sys.stderr,
+        )
+        final_address = hme_address
+
+    if args.clipboard:
+        try:
+            copy_to_clipboard(final_address)
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"Warning: Clipboard copy failed: {e}", file=sys.stderr)
+
+    print(final_address)
+
+
+def cmd_list(_args):
+    """List existing Hide My Email addresses."""
+    config = ensure_config()
+    params = urlencode(_build_query_params(config))
+    base_url = config["base_url"]
+
+    result = http_request("GET", f"{base_url}/v2/hme/list?{params}", config)
+    addresses = result.get("result", {}).get("hmeEmails", [])
+    if not addresses:
+        print("No Hide My Email addresses found.")
+        return
+
+    for addr in addresses:
+        email = addr.get("hme", "")
+        label = addr.get("label", "")
+        forward = addr.get("forwardToEmail", "")
+        is_active = addr.get("isActive", True)
+        status = "" if is_active else " [inactive]"
+        label_str = f"  ({label})" if label else ""
+        forward_str = f"  -> {forward}" if forward else ""
+        print(f"{email}{label_str}{forward_str}{status}")
+
+
+def cmd_refresh(_args):
+    """Re-configure cookies (alias for setup)."""
+    cmd_setup(_args)
+
+
+# -- Entry point ---------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Hide My Email CLI - Generate iCloud Hide My Email addresses"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    subparsers.add_parser("setup", help="Initial Cookie setup (interactive)")
+
+    gen_parser = subparsers.add_parser("generate", help="Generate a new HME address")
+    gen_parser.add_argument("--label", "-l", default="", help="Label (site name)")
+    gen_parser.add_argument("--note", "-n", default="", help="Note/memo")
+    gen_parser.add_argument(
+        "--clipboard",
+        "-c",
+        action="store_true",
+        default=True,
+        help="Copy to clipboard (default: true)",
+    )
+    gen_parser.add_argument(
+        "--no-clipboard",
+        action="store_false",
+        dest="clipboard",
+        help="Do not copy to clipboard",
+    )
+
+    subparsers.add_parser("list", help="List existing HME addresses")
+    subparsers.add_parser("refresh", help="Re-configure cookies")
+
+    args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    commands = {
+        "setup": cmd_setup,
+        "generate": cmd_generate,
+        "list": cmd_list,
+        "refresh": cmd_refresh,
+    }
+    try:
+        try:
+            commands[args.command](args)
+        except (AuthError, ConfigError) as e:
+            if not sys.stdin.isatty():
+                raise
+            print(f"{e}", file=sys.stderr)
+            print(file=sys.stderr)
+            prompt_cookie(open_browser=True)
+            commands[args.command](args)
+    except AuthError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
+    except ConfigError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(3)
+    except ApiError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(4)
+    except NetworkError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(5)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
