@@ -38,10 +38,11 @@ The tool uses session cookies from an existing browser login — your Apple ID p
 
 Then follow the on-screen instructions:
 
-1. Open https://www.icloud.com and log in
-2. Open DevTools (F12) → **Network** tab
-3. Click any request → copy the `Cookie` request header value
-4. Paste into the terminal prompt
+1. icloud.com opens automatically — log in if needed
+2. Open DevTools (`Cmd+Option+I`) → **Network** tab
+3. Reload (`Cmd+R`)
+4. Click any request → Headers → Request Headers → right-click `Cookie` → **Copy value**
+5. Come back to the terminal and press Enter (the cookie is read from your clipboard)
 
 The tool validates the session against Apple's API and caches the response. Config is stored at `~/.config/hide-my-email/config.json` with `0600` permissions.
 
@@ -89,6 +90,16 @@ EMAIL=$(./hme generate -l "CI test")
 ```
 abc123@privaterelay.appleid.com  (GitHub)  -> you@icloud.com
 def456@privaterelay.appleid.com  (Acme Corp)  -> you@icloud.com  [inactive]
+```
+
+### Search
+
+```bash
+# Search by label or note (copies first match to clipboard)
+./hme search "GitHub"
+
+# Without clipboard copy
+./hme search "Acme" --no-clipboard
 ```
 
 ### Refresh session

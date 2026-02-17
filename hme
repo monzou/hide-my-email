@@ -288,27 +288,68 @@ def cmd_generate(args):
     print(final_address)
 
 
+def _fetch_addresses(config):
+    """Fetch all HME addresses from the API."""
+    params = urlencode(_build_query_params(config))
+    base_url = config["base_url"]
+    result = http_request("GET", f"{base_url}/v2/hme/list?{params}", config)
+    return result.get("result", {}).get("hmeEmails", [])
+
+
+def _format_address(addr):
+    """Format a single HME address for display."""
+    email = addr.get("hme", "")
+    label = addr.get("label", "")
+    forward = addr.get("forwardToEmail", "")
+    is_active = addr.get("isActive", True)
+    status = "" if is_active else " [inactive]"
+    label_str = f"  ({label})" if label else ""
+    forward_str = f"  -> {forward}" if forward else ""
+    return f"{email}{label_str}{forward_str}{status}"
+
+
 def cmd_list(_args):
     """List existing Hide My Email addresses."""
     config = ensure_config()
-    params = urlencode(_build_query_params(config))
-    base_url = config["base_url"]
-
-    result = http_request("GET", f"{base_url}/v2/hme/list?{params}", config)
-    addresses = result.get("result", {}).get("hmeEmails", [])
+    addresses = _fetch_addresses(config)
     if not addresses:
         print("No Hide My Email addresses found.")
         return
 
     for addr in addresses:
-        email = addr.get("hme", "")
-        label = addr.get("label", "")
-        forward = addr.get("forwardToEmail", "")
-        is_active = addr.get("isActive", True)
-        status = "" if is_active else " [inactive]"
-        label_str = f"  ({label})" if label else ""
-        forward_str = f"  -> {forward}" if forward else ""
-        print(f"{email}{label_str}{forward_str}{status}")
+        print(_format_address(addr))
+
+
+def cmd_search(args):
+    """Search HME addresses by label or note."""
+    config = ensure_config()
+    addresses = _fetch_addresses(config)
+    query = args.query.lower()
+
+    matches = [
+        addr for addr in addresses
+        if query in addr.get("label", "").lower()
+        or query in addr.get("note", "").lower()
+    ]
+
+    if not matches:
+        print(f"No addresses matching '{args.query}'.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.clipboard:
+        email = matches[0].get("hme", "")
+        try:
+            copy_to_clipboard(email)
+            if len(matches) > 1:
+                print(
+                    f"Copied first match to clipboard: {email}",
+                    file=sys.stderr,
+                )
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"Warning: Clipboard copy failed: {e}", file=sys.stderr)
+
+    for addr in matches:
+        print(_format_address(addr))
 
 
 def cmd_refresh(_args):
@@ -345,6 +386,23 @@ def main():
     )
 
     subparsers.add_parser("list", help="List existing HME addresses")
+
+    search_parser = subparsers.add_parser("search", help="Search by label or note")
+    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument(
+        "--clipboard",
+        "-c",
+        action="store_true",
+        default=True,
+        help="Copy first match to clipboard (default: true)",
+    )
+    search_parser.add_argument(
+        "--no-clipboard",
+        action="store_false",
+        dest="clipboard",
+        help="Do not copy to clipboard",
+    )
+
     subparsers.add_parser("refresh", help="Re-configure cookies")
 
     args = parser.parse_args()
@@ -356,6 +414,7 @@ def main():
         "setup": cmd_setup,
         "generate": cmd_generate,
         "list": cmd_list,
+        "search": cmd_search,
         "refresh": cmd_refresh,
     }
     try:
