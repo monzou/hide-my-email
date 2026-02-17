@@ -120,6 +120,32 @@ def _extract_email(value):
     return None
 
 
+def _merge_set_cookies(config, response_headers):
+    """Merge Set-Cookie headers from an API response into stored cookies."""
+    set_cookies = response_headers.get_all("Set-Cookie")
+    if not set_cookies:
+        return
+
+    # Parse existing cookies into an ordered dict
+    existing = {}
+    for pair in config.get("cookies", "").split(";"):
+        pair = pair.strip()
+        if "=" in pair:
+            name, value = pair.split("=", 1)
+            existing[name.strip()] = value.strip()
+
+    # Update with new values from Set-Cookie headers
+    for sc in set_cookies:
+        # Set-Cookie: NAME=VALUE; path=/; domain=...; ...
+        cookie_part = sc.split(";", 1)[0]
+        if "=" in cookie_part:
+            name, value = cookie_part.split("=", 1)
+            existing[name.strip()] = value.strip()
+
+    config["cookies"] = "; ".join(f"{k}={v}" for k, v in existing.items())
+    save_config(config)
+
+
 def http_request(method, url, config, data=None):
     """Single HTTP entry-point. Raises HmeError subtypes on failure."""
     headers = _build_headers(config)
@@ -127,6 +153,7 @@ def http_request(method, url, config, data=None):
     req = Request(url, data=body, headers=headers, method=method)
     try:
         with urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+            _merge_set_cookies(config, resp.headers)
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except HTTPError as e:
