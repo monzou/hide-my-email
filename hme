@@ -146,8 +146,32 @@ def _merge_set_cookies(config, response_headers):
     save_config(config)
 
 
-def http_request(method, url, config, data=None):
-    """Single HTTP entry-point. Raises HmeError subtypes on failure."""
+def _apply_trust_tokens(config, response_body):
+    """Extract trust tokens from a 421 response body and set as HSA-TRUST cookie."""
+    try:
+        data = json.loads(response_body) if response_body else {}
+    except json.JSONDecodeError:
+        return
+    trust_tokens = data.get("trustTokens", [])
+    if not trust_tokens:
+        return
+    existing = {}
+    for pair in config.get("cookies", "").split(";"):
+        pair = pair.strip()
+        if "=" in pair:
+            name, value = pair.split("=", 1)
+            existing[name.strip()] = value.strip()
+    existing["X-APPLE-WEBAUTH-HSA-TRUST"] = trust_tokens[0]
+    config["cookies"] = "; ".join(f"{k}={v}" for k, v in existing.items())
+    save_config(config)
+
+
+def http_request(method, url, config, data=None, _retried=False):
+    """Single HTTP entry-point. Raises HmeError subtypes on failure.
+
+    On HTTP 421 (session token rotation), merges Set-Cookie headers and
+    trust tokens from the error response and retries once.
+    """
     headers = _build_headers(config)
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = Request(url, data=body, headers=headers, method=method)
@@ -157,6 +181,13 @@ def http_request(method, url, config, data=None):
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except HTTPError as e:
+        if e.code == 421 and not _retried:
+            # Apple rotates session tokens via 421 + Set-Cookie + trustTokens.
+            # Merge cookies and trust tokens, then retry once.
+            _merge_set_cookies(config, e.headers)
+            error_body = e.read().decode("utf-8", errors="replace")
+            _apply_trust_tokens(config, error_body)
+            return http_request(method, url, config, data=data, _retried=True)
         if e.code in (401, 421):
             raise AuthError(
                 "Cookie expired or invalid. Run 'hme setup' to re-configure."
