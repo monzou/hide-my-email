@@ -202,7 +202,12 @@ def http_request(method, url, config, data=None, _retried=False):
 
 def validate_and_cache(config):
     """Call /validate to obtain DSID and base URL, then persist them."""
+    # Preserve the original browser cookies.  /validate may rotate them
+    # (via Set-Cookie on 421 retry), but the rotated values are only needed
+    # for the /validate retry itself — they break subsequent HME API calls.
+    original_cookies = config["cookies"]
     result = http_request("POST", SETUP_URL, config)
+    config["cookies"] = original_cookies
 
     dsid = result.get("dsInfo", {}).get("dsid")
     if not dsid:
