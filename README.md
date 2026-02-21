@@ -50,11 +50,13 @@ The tool validates the session against Apple's API and caches the response. Conf
 
 Open Raycast Settings → Extensions → Script Commands → Add Directory → select the `raycast/` folder.
 
-Two commands become available:
+Four commands become available:
 
 | Command | Mode | Description |
 |---|---|---|
+| **Setup Hide My Email** | compact | Reads cookie from clipboard and configures session |
 | **Generate Hide My Email** | compact | Creates a new address, copies to clipboard |
+| **Search Hide My Email** | compact | Searches by label/note, copies first match |
 | **List Hide My Email** | fullOutput | Shows all existing addresses |
 
 ## Usage
@@ -120,6 +122,7 @@ When cookies expire (typically after a few weeks), re-run setup:
 | 3 | Configuration error (missing config, corrupt file) |
 | 4 | API error (unexpected response from iCloud) |
 | 5 | Network error (connectivity issue) |
+| 6 | No results (search returned no matches) |
 
 ## Project Structure
 
@@ -127,7 +130,9 @@ When cookies expire (typically after a few weeks), re-run setup:
 hide-my-email/
 ├── hme                       # CLI tool (Python 3, stdlib only)
 └── raycast/
+    ├── setup-hme.py          # Raycast: session setup from clipboard
     ├── generate-hme.py       # Raycast: generate + clipboard
+    ├── search-hme.py         # Raycast: search by label/note
     └── list-hme.py           # Raycast: list addresses
 ```
 

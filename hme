@@ -120,21 +120,30 @@ def _extract_email(value):
     return None
 
 
+def _parse_cookies(cookie_string):
+    """Parse a Cookie header string into an ordered dict."""
+    cookies = {}
+    for pair in cookie_string.split(";"):
+        pair = pair.strip()
+        if "=" in pair:
+            name, value = pair.split("=", 1)
+            cookies[name.strip()] = value.strip()
+    return cookies
+
+
+def _serialize_cookies(cookies_dict):
+    """Serialize a cookies dict back into a Cookie header string."""
+    return "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
+
+
 def _merge_set_cookies(config, response_headers):
     """Merge Set-Cookie headers from an API response into stored cookies."""
     set_cookies = response_headers.get_all("Set-Cookie")
     if not set_cookies:
         return
 
-    # Parse existing cookies into an ordered dict
-    existing = {}
-    for pair in config.get("cookies", "").split(";"):
-        pair = pair.strip()
-        if "=" in pair:
-            name, value = pair.split("=", 1)
-            existing[name.strip()] = value.strip()
+    existing = _parse_cookies(config.get("cookies", ""))
 
-    # Update with new values from Set-Cookie headers
     for sc in set_cookies:
         # Set-Cookie: NAME=VALUE; path=/; domain=...; ...
         cookie_part = sc.split(";", 1)[0]
@@ -142,7 +151,7 @@ def _merge_set_cookies(config, response_headers):
             name, value = cookie_part.split("=", 1)
             existing[name.strip()] = value.strip()
 
-    config["cookies"] = "; ".join(f"{k}={v}" for k, v in existing.items())
+    config["cookies"] = _serialize_cookies(existing)
     save_config(config)
 
 
@@ -155,14 +164,9 @@ def _apply_trust_tokens(config, response_body):
     trust_tokens = data.get("trustTokens", [])
     if not trust_tokens:
         return
-    existing = {}
-    for pair in config.get("cookies", "").split(";"):
-        pair = pair.strip()
-        if "=" in pair:
-            name, value = pair.split("=", 1)
-            existing[name.strip()] = value.strip()
+    existing = _parse_cookies(config.get("cookies", ""))
     existing["X-APPLE-WEBAUTH-HSA-TRUST"] = trust_tokens[0]
-    config["cookies"] = "; ".join(f"{k}={v}" for k, v in existing.items())
+    config["cookies"] = _serialize_cookies(existing)
     save_config(config)
 
 
@@ -206,8 +210,11 @@ def validate_and_cache(config):
     # (via Set-Cookie on 421 retry), but the rotated values are only needed
     # for the /validate retry itself — they break subsequent HME API calls.
     original_cookies = config["cookies"]
-    result = http_request("POST", SETUP_URL, config)
-    config["cookies"] = original_cookies
+    try:
+        result = http_request("POST", SETUP_URL, config)
+    finally:
+        config["cookies"] = original_cookies
+        save_config(config)
 
     dsid = result.get("dsInfo", {}).get("dsid")
     if not dsid:
@@ -247,15 +254,37 @@ def copy_to_clipboard(text):
     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
 
 
-# -- Sub-commands --------------------------------------------------------------
-
-
 def read_clipboard():
     """Read text from macOS clipboard via pbpaste."""
     result = subprocess.run(
         ["pbpaste"], capture_output=True, timeout=5,
     )
     return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+# -- Sub-commands --------------------------------------------------------------
+
+
+def _save_cookie_and_validate(cookie_input):
+    """Validate a cookie string, save to config, and run /validate."""
+    if cookie_input.lower().startswith("cookie:"):
+        cookie_input = cookie_input[len("cookie:"):].strip()
+
+    if not cookie_input or "X-APPLE" not in cookie_input.upper():
+        raise ConfigError(
+            "Clipboard does not contain iCloud cookies. "
+            "Copy the 'Cookie' request header value from icloud.com first."
+        )
+
+    config = load_config() or {}
+    config["cookies"] = cookie_input
+    config.pop("dsid", None)
+    config.pop("base_url", None)
+    config.pop("client_id", None)
+    save_config(config)
+
+    config = validate_and_cache(config)
+    return config
 
 
 def prompt_cookie(open_browser=True):
@@ -273,28 +302,16 @@ def prompt_cookie(open_browser=True):
     print(file=sys.stderr)
 
     input("Press Enter after copying the Cookie...")
-    cookie_input = read_clipboard()
-
-    if cookie_input.lower().startswith("cookie:"):
-        cookie_input = cookie_input[len("cookie:"):].strip()
-
-    if not cookie_input or "X-APPLE" not in cookie_input.upper():
-        raise ConfigError(
-            "Clipboard does not contain iCloud cookies. "
-            "Copy the 'Cookie' request header value and try again."
-        )
-
-    config = load_config() or {}
-    config["cookies"] = cookie_input
-    config.pop("dsid", None)
-    config.pop("base_url", None)
-    config.pop("client_id", None)
-    save_config(config)
 
     print("Validating session...", file=sys.stderr)
-    config = validate_and_cache(config)
+    config = _save_cookie_and_validate(read_clipboard())
     print(f"Session refreshed (DSID: {config['dsid']})", file=sys.stderr)
     return config
+
+
+def setup_from_clipboard():
+    """Read cookie from clipboard (non-interactive), validate, and save."""
+    return _save_cookie_and_validate(read_clipboard())
 
 
 def cmd_setup(_args):
@@ -376,7 +393,7 @@ def cmd_list(_args):
     config = ensure_config()
     addresses = _fetch_addresses(config)
     if not addresses:
-        print("No Hide My Email addresses found.")
+        print("No Hide My Email addresses found.", file=sys.stderr)
         return
 
     for addr in addresses:
@@ -397,7 +414,7 @@ def cmd_search(args):
 
     if not matches:
         print(f"No addresses matching '{args.query}'.", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(6)
 
     if args.clipboard:
         email = matches[0].get("hme", "")
@@ -413,6 +430,12 @@ def cmd_search(args):
 
     for addr in matches:
         print(_format_address(addr))
+
+
+def cmd_setup_clipboard(_args):
+    """Non-interactive setup: read cookie from clipboard and validate."""
+    config = setup_from_clipboard()
+    print(f"Session refreshed (DSID: {config['dsid']})", file=sys.stderr)
 
 
 def cmd_refresh(_args):
@@ -466,6 +489,10 @@ def main():
         help="Do not copy to clipboard",
     )
 
+    subparsers.add_parser(
+        "setup-clipboard",
+        help="Setup from clipboard (non-interactive, for Raycast)",
+    )
     subparsers.add_parser("refresh", help="Re-configure cookies")
 
     args = parser.parse_args()
@@ -475,6 +502,7 @@ def main():
 
     commands = {
         "setup": cmd_setup,
+        "setup-clipboard": cmd_setup_clipboard,
         "generate": cmd_generate,
         "list": cmd_list,
         "search": cmd_search,
@@ -484,7 +512,7 @@ def main():
         try:
             commands[args.command](args)
         except (AuthError, ConfigError) as e:
-            if not sys.stdin.isatty():
+            if args.command in ("setup", "setup-clipboard") or not sys.stdin.isatty():
                 raise
             print(f"{e}", file=sys.stderr)
             print(file=sys.stderr)

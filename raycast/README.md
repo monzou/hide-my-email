@@ -9,6 +9,13 @@
 
 ## Commands
 
+### Setup Hide My Email
+
+- **Keyword**: "Setup Hide My Email"
+- **Mode**: compact
+- Reads the iCloud cookie from your clipboard and configures the session
+- Use this to refresh an expired session without opening a terminal
+
 ### Generate Hide My Email
 
 - **Keyword**: "Generate Hide My Email"
