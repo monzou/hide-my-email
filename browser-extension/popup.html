@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 300px;
+      background: #000;
+      color: #ededed;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid #333;
+    }
+
+    .header svg { flex-shrink: 0; }
+
+    .header h1 {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    .body { padding: 16px; }
+
+    /* Status indicator */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dot.ok    { background: #50e3c2; box-shadow: 0 0 6px rgba(80, 227, 194, 0.4); }
+    .dot.error { background: #ee5555; box-shadow: 0 0 6px rgba(238, 85, 85, 0.3); }
+    .dot.none  { background: #666; }
+
+    .status-text {
+      font-size: 13px;
+      color: #ededed;
+      line-height: 1.3;
+      white-space: pre-line;
+    }
+
+    /* Meta info */
+    .meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 6px;
+    }
+
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .meta-label {
+      font-size: 12px;
+      color: #888;
+    }
+
+    .meta-value {
+      font-size: 12px;
+      font-family: "SF Mono", "Menlo", monospace;
+      color: #ededed;
+    }
+
+    /* Button */
+    button {
+      width: 100%;
+      padding: 8px 0;
+      background: #ededed;
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: #fff; }
+
+    button:disabled {
+      background: #333;
+      color: #888;
+      cursor: not-allowed;
+    }
+
+    /* Empty state */
+    .empty {
+      text-align: center;
+      padding: 8px 0 16px;
+      color: #888;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .empty a {
+      color: #ededed;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="1" y="3" width="14" height="10" rx="2" stroke="#ededed" stroke-width="1.5"/>
+      <path d="M1 5l7 4 7-4" stroke="#ededed" stroke-width="1.5" stroke-linejoin="round"/>
+    </svg>
+    <h1>Hide My Email</h1>
+  </div>
+  <div class="body">
+    <div id="connected" style="display:none">
+      <div class="status-row">
+        <div id="dot" class="dot ok"></div>
+        <div id="status-text" class="status-text">Connected</div>
+      </div>
+      <div class="meta" id="meta">
+        <div class="meta-row">
+          <span class="meta-label">DSID</span>
+          <span class="meta-value" id="dsid">—</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Last sync</span>
+          <span class="meta-value" id="last-sync">—</span>
+        </div>
+      </div>
+      <button class="sync-btn">Sync Now</button>
+    </div>
+    <div id="empty" style="display:none">
+      <div class="status-row">
+        <div class="dot none"></div>
+        <div class="status-text">Not connected</div>
+      </div>
+      <div class="empty">
+        Open <a href="https://www.icloud.com" target="_blank">icloud.com</a> and sign in to sync automatically.
+      </div>
+      <button class="sync-btn">Sync Now</button>
+    </div>
+    <div id="error-view" style="display:none">
+      <div class="status-row">
+        <div class="dot error"></div>
+        <div id="error-text" class="status-text">Error</div>
+      </div>
+      <button class="sync-btn">Retry</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

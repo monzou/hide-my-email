@@ -10,7 +10,7 @@
 # @raycast.icon 🔑
 
 # Documentation:
-# @raycast.description Setup HME session from clipboard cookie
+# @raycast.description Setup HME session (browser extension or clipboard cookie)
 # @raycast.author monzou
 
 import os
@@ -29,8 +29,8 @@ try:
     if result.returncode == 0:
         print("Session configured!")
     else:
-        error = result.stderr.strip() or "Setup failed"
-        print(f"Error: {error}")
+        subprocess.run(["open", "https://www.icloud.com"], check=False)
+        print("Opening icloud.com — sign in to sync via browser extension")
 except subprocess.TimeoutExpired:
     print("Error: Request timed out")
 except Exception as e:
